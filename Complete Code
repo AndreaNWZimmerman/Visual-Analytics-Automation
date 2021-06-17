@@ -1,0 +1,200 @@
+/*Begin process of updating the VA report and saving with unique name using &caseNum*/
+filename have1 TEMP ENCODING='UTF-8';
+OPTIONS PARMCARDS=have1;
+PARMCARDS4;
+/* replace StartingDataSet1 with your starting dataset, update server and library as needed
+   replace RealDataSet1_&caseNum with your real dataset and update server and library as needed
+   update the resultParentFolderUri for the folder you want your temporary report written to */
+	{
+		"inputReportUri": "/reports/reports/aalf-aew-q9834yr-9a8df-9a8df98",
+		"dataSources": [
+					{
+					   "namePattern": "serverLibraryTable",
+				    	   "purpose"    : "original",
+					   "server"     : "cas-test-default",
+					   "library"    : "PUBLIC",
+					   "table"      : "StartingDataSet1"
+					},
+					{
+					    "namePattern"     : "serverLibraryTable",
+					    "purpose"         : "replacement",
+					    "server"          : "cas-test-default",
+					    "library"         : "PUBLIC",
+					    "table"           : "RealDataSet1_&caseNum",
+					    "replacementLabel": "RealDataSet1_&caseNum"
+				          }
+                                                ],
+
+				"resultReportName"     : "OutputReport_TEMPORARY",
+				"resultParentFolderUri": "/folders/folders/a8-ad-09-ad-a08fd",
+				"resultReport": {
+							"name"       :"OutputReport_TEMPORARY",
+							"description":"OutputReport_TEMPORARY"
+						       }
+	}
+
+;;;;
+
+filename json1 temp encoding='utf-8';
+data _null_;
+   infile have1;
+   file json1;
+   input;
+   _infile_=resolve(_infile_);
+   put _infile_;
+run;
+
+/*execute the code just genreated */
+%let BASE_URI=%sysfunc(getoption(SERVICESBASEURL));
+FILENAME tranFile TEMP ENCODING='UTF-8';
+FILENAME hdrout TEMP ENCODING='UTF-8';
+
+PROC HTTP METHOD ="POST" oauth_bearer=sas_services OUT=tranFile headerout=hdrout
+	     URL = "&BASE_URI/reportTransforms/dataMappedReports/?useSavedReport=true&saveResult=true"
+	      IN = json1;
+    HEADERS "Accept" = "application/vnd.sas.report.transform+json"
+	    "Content-Type" = "application/vnd.sas.report.transform+json" ;
+*debug level=2;
+RUN;
+
+/*Get URI for the temp report just created*/
+
+%let fullpath=/SAS Content/;
+
+FILENAME rptFile TEMP ENCODING='UTF-8';
+PROC HTTP METHOD = "GET" oauth_bearer=sas_services OUT = rptFile
+             URL = "&BASE_URI/reports/reports?filter=startsWith(name,'OutputReport_TEMPORARY')";
+     HEADERS "Accept" = "application/vind.sas.collection+json"
+             "Accept-Item" = "application/vnd.sas.summary+json";
+RUN;
+
+LIBNAME rptFile json;
+/*Get the row for the most recent version*/
+proc sql noprint;
+  create table temp as
+  select *
+  from rptFile.items
+  having creationTimeStamp=max(creationTimeStamp);
+quit;
+
+data ds_rpts (keep=rptID id name createdBy creationTimeStamp modifiedTimeStamp  
+	      rename=(modifiedTimeStamp=LastModified creationTimeStamp=CreatedAt));
+	length rptID $ 60 rptPath $ 100;
+	set temp;
+	rptID = '/reports/reports/'||id;
+run;
+
+%MACRO save_VA_Report_Path(reportURI);
+	FILENAME fldFile TEMP ENCODING='UTF-8';
+	%let locURI = &reportURI;
+	
+	PROC HTTP METHOD = "GET" oauth_bearer=sas_services OUT = fldFile
+	/*  get the folders in which the reportURI is in  */
+		URL = "&BASE_URI/folders/ancestors?childUri=/reports/reports/&reportURI";
+     	HEADERS "Accept" = "application/vnd.sas.content.folder.ancestor+json";
+	RUN;
+	LIBNAME fldFile json;
+	
+        /* generate the path from the returned folders above */
+	proc sql noprint;
+		select name into :fldname separated by '/'
+		from fldFile.ancestors 
+		order by ordinal_ancestors desc;
+	quit;
+
+	data tmpsave;
+		length cc $ 36;
+		set ds_rpts;
+		cc = "&locURI";
+		if trim(id) = trim(cc) then 
+			rptPath=resolve('&fullpath.&fldname.');
+		drop cc;
+	run;
+	
+	data ds_rpts;
+		set tmpsave;
+	run;
+
+%MEND save_VA_Report_Path;
+
+DATA _null_;
+	set ds_rpts;
+	call execute('%save_VA_Report_Path('||id||')');
+RUN;
+
+/* store that URI in a macro var called rptID */
+proc sql noprint;
+  select rptID into :rptID trimmed
+  from ds_rpts;
+quit;
+
+/*START SECOND DATA CHANGE*/
+
+filename have2 TEMP ENCODING='UTF-8';
+OPTIONS PARMCARDS=have2;
+PARMCARDS4;
+
+/* replace StartingDataSet2 with your starting dataset, update server and library as needed
+   replace RealDataSet2_&caseNum with your real dataset and update server and library as needed
+   replace FinalReport_&caseNum with the name for your final report
+   update the resultParentFolderUri for the folder you want your final report written to 
+*/
+	{
+		"inputReportUri": "&rptID",
+		"dataSources": [
+				{
+				  "namePattern": "serverLibraryTable",
+				  "purpose"    : "original",
+				  "server"     : "cas-test-default",
+				  "library"    : "PUBLIC",
+				  "table"      : "StartingDataSet2"
+						},
+							{
+			          "namePattern"     : "serverLibraryTable",
+		                  "purpose"         : "replacement",
+				  "server"          : "cas-test-default",
+				  "library"         : "PUBLIC",
+				  "table"           : "RealDataSet2_&caseNum",
+				  "replacementLabel": "RealDataSet2_&caseNum"
+				        }
+
+			            ],
+
+						
+				"resultReportName": "FinalReport_&caseNum",
+				"resultParentFolderUri": "/folders/folders/a8-ad-09-ad-a08fd",
+				"resultReport": {
+						"name"       : "FinalReport_&caseNum",
+						"description": "FinalReport_&caseNum"
+								}
+	}
+
+;;;;
+
+filename json2 temp encoding='utf-8';
+data _null_;
+   infile have2;
+   file json2;
+   input;
+   _infile_=resolve(_infile_);
+   put _infile_;
+run;
+
+FILENAME tranFil2 TEMP ENCODING='UTF-8';
+FILENAME hdrout2 TEMP ENCODING='UTF-8';
+
+PROC HTTP METHOD ="POST" oauth_bearer=sas_services OUT=tranFil2 headerout=hdrout2
+	  URL = "&BASE_URI/reportTransforms/dataMappedReports/?useSavedReport=true&saveResult=true"
+	  IN = json2;
+     HEADERS "Accept" = "application/vnd.sas.report.transform+json"
+			"Content-Type" = "application/vnd.sas.report.transform+json" ;
+*debug level=2;
+RUN;
+
+/* Delete the TEMPORARY report */
+PROC HTTP METHOD ="DELETE" oauth_bearer=sas_services OUT=tranFile headerout=hdrout
+          URL = "&BASE_URI/reports/reports/&rptID";
+HEADERS "Accept" = "application/vnd.sas.report.transform+json"
+        "Content-Type" = "application/vnd.sas.report.transform+json" ;
+*debug level=2;
+RUN;
